@@ -2,6 +2,8 @@
 #include "LogUtil.h"
 #include "pano_api.h"
 
+#include <thread>
+
 enum cube_faces { X_POS, X_NEG, Y_POS, Y_NEG, Z_POS, Z_NEG };
 
 struct cart3D {
@@ -17,7 +19,7 @@ struct cart2D {
     int faceIndex;
 };
 
-cv::Vec2f unit3DToUnit2D(double x, double y, double z, int faceIndex) {
+Vec2f unit3DToUnit2D(double x, double y, double z, int faceIndex) {
     double x2D, y2D;
 
     if (faceIndex == X_POS) { // X+
@@ -47,7 +49,7 @@ cv::Vec2f unit3DToUnit2D(double x, double y, double z, int faceIndex) {
 
     y2D = 1 - y2D;
 
-    return cv::Vec2f(x2D, y2D);
+    return Vec2f(x2D, y2D);
 }
 
 cart3D projectX(double theta, double phi, int sign) {
@@ -107,7 +109,7 @@ cart2D convertEquirectUVtoUnit2D(double theta, double phi, int square_length) {
         equirectUV = projectZ(theta, phi, zz);
     }
 
-    cv::Vec2f unit2D = unit3DToUnit2D(equirectUV.x, equirectUV.y, equirectUV.z,
+    Vec2f unit2D = unit3DToUnit2D(equirectUV.x, equirectUV.y, equirectUV.z,
         equirectUV.faceIndex);
 
     unit2D[0] *= square_length;
@@ -132,7 +134,13 @@ extern "C" BOOL merge_cube2sphere(LPCSTR *cubesFile, LPCSTR mergeFile) {
         Mat topImg = imread(cubesFile[4]); // +Z
         Mat bottomImg = imread(cubesFile[5]); // -Z
 
-        const int output_height = floor((frontImg.rows + leftImg.rows + topImg.rows + backImg.rows + rightImg.rows + bottomImg.rows) / 6);
+        if (frontImg.cols != frontImg.rows || backImg.cols != backImg.rows || leftImg.cols != leftImg.rows
+            || rightImg.cols != rightImg.rows || topImg.cols != topImg.rows || bottomImg.cols != bottomImg.rows) {
+            logd("Height & weight of each image must be equal");
+            return FALSE;
+        }
+
+        const int output_height = frontImg.rows - 1;
         const int output_width = output_height * 2;
         const int square_length = output_height;
 
@@ -140,43 +148,45 @@ extern "C" BOOL merge_cube2sphere(LPCSTR *cubesFile, LPCSTR mergeFile) {
         Mat destination(output_height, output_width, CV_8UC3,
             Scalar(255, 255, 255));
 
-#pragma omp parallel for
-        for (int j = 0; j < destination.cols; j++) {
-            for (int i = 0; i < destination.rows; i++) {
-                // 2. Get the normalised u,v coordinates for the current pixel
-                double U = (double)j / (output_width - 1); // 0..1
-                double V = (double)i / (output_height - 1); // No need for 1-... as the image output
-                // needs to start from the top anyway.
-                double theta = U * 2 * M_PI;
-                double phi = V * M_PI;
-                // 4. calculate the 3D cartesian coordinate which has been projected to
-                // a cubes face
-                cart2D cart = convertEquirectUVtoUnit2D(theta, phi, square_length);
+        parallel_for_(Range(0, destination.rows), [&](const Range& range) {
+            for (int i = range.start; i < range.end; i++) {
+                for (int j = 0; j < destination.cols; j++) {
+                    // 2. Get the normalised u,v coordinates for the current pixel
+                    double U = (double)j / (output_width - 1); // 0..1
+                    double V = (double)i / (output_height - 1); // No need for 1-... as the image output
+                    // needs to start from the top anyway.
+                    double theta = U * 2 * M_PI;
+                    double phi = V * M_PI;
+                    // 4. calculate the 3D cartesian coordinate which has been projected to
+                    // a cubes face
+                    cart2D cart = convertEquirectUVtoUnit2D(theta, phi, square_length);
 
-                // 5. use this pixel to extract the colour
-                cv::Vec3b val;
-                if (cart.faceIndex == X_POS) {
-                    val = frontImg.at<cv::Vec3b>(cart.y, cart.x);
-                }
-                else if (cart.faceIndex == X_NEG) {
-                    val = backImg.at<cv::Vec3b>(cart.y, cart.x);
-                }
-                else if (cart.faceIndex == Y_POS) {
-                    val = leftImg.at<cv::Vec3b>(cart.y, cart.x);
-                }
-                else if (cart.faceIndex == Y_NEG) {
-                    val = rightImg.at<cv::Vec3b>(cart.y, cart.x);
-                }
-                else if (cart.faceIndex == Z_POS) {
-                    val = topImg.at<cv::Vec3b>(cart.y, cart.x);
-                }
-                else if (cart.faceIndex == Z_NEG) {
-                    val = bottomImg.at<cv::Vec3b>(cart.y, cart.x);
-                }
+                    // 5. use this pixel to extract the colour
+                    Vec3b val;
+                    if (cart.faceIndex == X_POS) {
+                        val = frontImg.at<Vec3b>(cart.y, cart.x);
+                    }
+                    else if (cart.faceIndex == X_NEG) {
+                        val = backImg.at<Vec3b>(cart.y, cart.x);
+                    }
+                    else if (cart.faceIndex == Y_POS) {
+                        val = leftImg.at<Vec3b>(cart.y, cart.x);
+                    }
+                    else if (cart.faceIndex == Y_NEG) {
+                        val = rightImg.at<Vec3b>(cart.y, cart.x);
+                    }
+                    else if (cart.faceIndex == Z_POS) {
+                        val = topImg.at<Vec3b>(cart.y, cart.x);
+                    }
+                    else if (cart.faceIndex == Z_NEG) {
+                        val = bottomImg.at<Vec3b>(cart.y, cart.x);
+                    }
 
-                destination.at<cv::Vec3b>(i, j) = val;
+                    destination.at<Vec3b>(i, j) = val;
+                }
             }
-        }
+            });
+        resize(destination, destination, Size(frontImg.cols * 2, frontImg.rows));
         imwrite(mergeFile, destination);
         return TRUE;
     }
@@ -185,3 +195,31 @@ extern "C" BOOL merge_cube2sphere(LPCSTR *cubesFile, LPCSTR mergeFile) {
         return FALSE;
     }
 }
+
+/*
+void merge_cube2sphere(const Mat& cube, Mat& sphere, int square_length) {
+    int chunk_size = cube.rows / std::thread::hardware_concurrency();
+    std::vector<std::thread> threads;
+    for (int i = 0; i < cube.rows; i += chunk_size) {
+        int end = std::min(i + chunk_size, cube.rows);
+        threads.emplace_back(merge_cube2sphere_chunk, std::ref(cube), std::ref(sphere),
+            square_length, i, end);
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+}
+
+void merge_cube2sphere_chunk(const Mat& cube, Mat& sphere, int square_length,
+    int start, int end) {
+    double theta, phi;
+    cart2D result;
+    for (int y = start; y < end; y++) {
+        for (int x = 0; x < cube.cols; x++) {
+            theta = x * 2.0 * M_PI / square_length;
+            phi = (y + 0.5) * M_PI / square_length;
+            result = convertEquirectUVtoUnit2D(theta, phi, square_length);
+            sphere.at<Vec3b>(y, x) = cube.at<Vec3b>(result.y, result.x + square_length * result.faceIndex);
+        }
+    }
+}*/

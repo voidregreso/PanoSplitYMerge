@@ -1,6 +1,7 @@
 #include "framework.h"
 #include "LogUtil.h"
 #include "pano_api.h"
+#include <thread>
 
 float faceTransform[6][2] =
 {
@@ -16,17 +17,16 @@ const char chs[] = { 'f', 'r', 'b', 'l', 'u', 'd' };
 inline void createCubeMapFace(const Mat& in, Mat& face, int faceId = 0, const int width = -1, const int height = -1)
 {
     float inWidth = (float)in.cols;
-    float inHeight = (float)in.rows;     // Obtener el n¨²mero de filas de la imagen
+    float inHeight = (float)in.rows;     // Obtener el numero de filas de la imagen
 
     // Allocate map
     Mat mapx(height, width, CV_32F);
-    Mat mapy(height, width, CV_32F);             // Asignaci¨®n de los ejes X & Y de la imagen
+    Mat mapy(height, width, CV_32F);             // Asignacion de los ejes X & Y de la imagen
 
-    // Calculate adjacent (ak) and opposite (an) of the
-    // triangle that is spanned from the sphere center
-    //to our cube face.
+    // Calculate adjacent (ak) and opposite (an) of the triangle that
+    // is spanned from the sphere center to our cube face.
     const float an = sin(M_PI / 4);
-    const float ak = cos(M_PI / 4);      // C¨¢lculo del centro de un tri¨¢ngulo tensor en una esfera adyacente a "ak" y opuesta a "an"
+    const float ak = cos(M_PI / 4);      // Calculo del centro de un triangulo tensor en una esfera adyacente a "ak" y opuesta a "an"
 
     const float ftu = faceTransform[faceId][0];
     const float ftv = faceTransform[faceId][1];
@@ -66,7 +66,6 @@ inline void createCubeMapFace(const Mat& in, Mat& face, int faceId = 0, const in
             }
             else {
                 // Top face
-                //cout << "aaa";
                 float d = sqrt(nx * nx + ny * ny);
                 v = -M_PI / 2 + atan2(d, ak);
                 u = atan2(-ny, nx);
@@ -138,11 +137,11 @@ LPSTR ExtractName(LPCSTR lpszPath)
     return (LPSTR)lastSlash;
 }
 
-
 extern "C" BOOL split_sphere2cube(LPCSTR inFile, LPCSTR outFolder) {
+    vector<thread> threads;
+    Mat resImgs[6];
     try {
         Mat srcImg = imread(inFile);
-        Mat resImg;
         int w, h;
         if (srcImg.cols != srcImg.rows * 2) {
             logd("Not a standard sphere pano image");
@@ -150,11 +149,18 @@ extern "C" BOOL split_sphere2cube(LPCSTR inFile, LPCSTR outFolder) {
         }
         w = h = srcImg.rows;
         for (int i = 0; i < 6; i++) {
-            createCubeMapFace(srcImg, resImg, i, w, h);
+            threads.push_back(thread([&srcImg, i, w, h, &resImgs] {
+                Mat resImg;
+                createCubeMapFace(srcImg, resImg, i, w, h);
+                resImg.copyTo(resImgs[i]);
+            }));
+        }
+        for (auto& t : threads) t.join();
+        for (int i = 0; i < 6; i++) {
             string name = string(ExtractName(inFile));
             string outFile = name.substr(0, name.rfind(".")) + "_" + chs[i] + ".jpg";
             if (outFolder != NULL) outFile = string(outFolder) + "/" + outFile;
-            imwrite(outFile, resImg);
+            imwrite(outFile, resImgs[i]);
         }
         return TRUE;
     }
